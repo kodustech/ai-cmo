@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "ai-cmo-dev",
+      "runtimeExecutable": "/Users/edvaldofreitas/dev/ai-cmo/scripts/dev-node22.sh",
+      "runtimeArgs": [],
+      "port": 3740
+    }
+  ]
+}

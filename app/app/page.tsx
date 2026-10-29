@@ -1,11 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from "react";
+import { COUNTRIES, countryLabel } from "@/lib/countries";
 
 type User = { id: string; email: string };
 type CompanySummary = { id: string; name: string; website: string; plan_mode: string; onboarding_complete: number };
 type Company = CompanySummary & {
-  offer: string; audience: string; competitors: string; founder_voice: string; goal: string;
+  offer: string; audience: string; competitors: string; founder_voice: string; goal: string; country: string;
   strategy: { diagnosis?: string; positioning?: string; icp?: string; priorities?: Array<{ title: string; reason: string; expectedSignal: string; kind: string }>; questions?: string[]; nextReview?: string };
 };
 type Work = { id: string; kind: string; title: string; rationale: string; description: string; status: string; priority: number };
@@ -181,7 +182,7 @@ export default function Page() {
 
       {section === "connections" && <div className="page-content narrow"><PageHeading eyebrow="DISTRIBUIÇÃO E MEDIÇÃO" title="Canais e fontes de dados." description="Conecte o LinkedIn e as fontes que ajudam o agente a medir o resultado." /><ConnectionPanel company={company} connections={connections} publicationMode={workspace.publicationMode} google={workspace.google} busy={busy} onAct={act} /></div>}
 
-      {section === "brief" && <div className="page-content narrow"><PageHeading eyebrow="MEMÓRIA DO AGENTE" title="O que sei sobre vocês." description="Confira minha leitura e me diga qual resultado importa primeiro. O restante eu aprendo na execução." /><BriefForm key={company.id} company={company} research={workspace.research} confirmed={workspace.profileConfirmed} busy={busy} onSave={(input) => act("update_brief", input, () => setSection("plan"))} onConfirm={() => act("confirm_profile", {}, () => setSection("plan"))} /></div>}
+      {section === "brief" && <div className="page-content narrow"><PageHeading eyebrow="MEMÓRIA DO AGENTE" title="O que sei sobre vocês." description="Confira minha leitura e me diga qual resultado importa primeiro. O restante eu aprendo na execução." /><BriefForm key={company.id} company={company} research={workspace.research} confirmed={workspace.profileConfirmed} busy={busy} onSave={(input, profile) => act("update_brief", { ...input, profile }, () => setSection("plan"))} onConfirm={() => setSection("plan")} /></div>}
     </main>
     <button className="floating-chat" onClick={() => setChatOpen(true)} aria-label="Conversar com o agente"><span className="pulse-dot" /> Falar com o agente <span>↗</span></button>
     {chatOpen && <ChatDrawer company={company} messages={workspace.messages} busy={busy} onClose={() => setChatOpen(false)} onSend={(message) => act("chat", { message })} />}
@@ -303,11 +304,16 @@ function AuthScreen({ onSuccess, error, setError }: { onSuccess: (user: User, we
     <button type="button" className="switch-auth" onClick={() => { setMode(mode === "signup" ? "login" : "signup"); setError(""); }}>{mode === "signup" ? "Já tem uma conta? Entrar" : "Ainda não tem conta? Começar pelo site"}</button></form></section></main>;
 }
 
-const blankBrief = { name: "", website: "", offer: "", audience: "", competitors: "", founderVoice: "", goal: "" };
+const blankBrief = { name: "", website: "", offer: "", audience: "", competitors: "", founderVoice: "", goal: "", country: "" };
 type Brief = typeof blankBrief;
 function BriefFields({ value, change }: { value: Brief; change: (next: Brief) => void }) {
   const field = (key: keyof Brief, label: string, placeholder: string, multiline = false) => <label key={key}>{label}{multiline ? <textarea value={value[key]} onChange={(event) => change({ ...value, [key]: event.target.value })} placeholder={placeholder} rows={3} /> : <input value={value[key]} onChange={(event) => change({ ...value, [key]: event.target.value })} placeholder={placeholder} />}</label>;
-  return <div className="form-grid">{field("name", "Nome da empresa", "Ex.: Acme")}{field("website", "Site", "https://suaempresa.com")}{field("offer", "O que vocês vendem?", "Produto, serviço e principal benefício", true)}{field("audience", "Para quem vendem?", "Perfil do comprador e da empresa", true)}{field("competitors", "Alternativas citadas", "Concorrentes ou processo atual")}{field("goal", "Objetivo de negócio", "Ex.: gerar conversas qualificadas", true)}{field("founderVoice", "O que só vocês sabem ou defendem?", "Cases, objeções, aprendizados e opiniões do founder", true)}</div>;
+  return <div className="form-grid">{field("name", "Nome da empresa", "Ex.: Acme")}{field("website", "Site", "https://suaempresa.com")}{field("goal", "Objetivo de negócio", "Ex.: gerar conversas qualificadas", true)}{field("founderVoice", "O que só vocês sabem ou defendem?", "Cases, objeções, aprendizados e opiniões do founder", true)}</div>;
+}
+
+function BriefFieldsReadOnly({ value }: { value: Brief }) {
+  const field = (key: keyof Brief, label: string, empty: string) => <label key={key}>{label}<p>{value[key] || empty}</p></label>;
+  return <div className="form-grid">{field("name", "Nome da empresa", "Ainda não informado")}{field("website", "Site", "Ainda não informado")}{field("goal", "Objetivo de negócio", "Ainda não definido")}{field("founderVoice", "O que só vocês sabem ou defendem?", "Ainda não informado")}</div>;
 }
 
 function Onboarding({ initialWebsite, initialNoSite, onLogout, onCreated, error, setError }: { initialWebsite: string; initialNoSite: boolean; onLogout: () => Promise<void>; onCreated: (id: string) => Promise<void>; error: string; setError: (value: string) => void }) {
@@ -315,6 +321,7 @@ function Onboarding({ initialWebsite, initialNoSite, onLogout, onCreated, error,
   const [noSite, setNoSite] = useState(initialNoSite);
   const [name, setName] = useState("");
   const [summary, setSummary] = useState("");
+  const [country, setCountry] = useState("");
   const [createdId, setCreatedId] = useState<string | null>(null);
   const [busyPhase, setBusyPhase] = useState<"" | "site" | "plan">("");
   async function submit(event: FormEvent) {
@@ -323,7 +330,7 @@ function Onboarding({ initialWebsite, initialNoSite, onLogout, onCreated, error,
       let companyId = createdId;
       if (!companyId) {
         setBusyPhase("site");
-        const created = await api("/api/workspace", { action: "create_company", website: noSite ? "" : website.trim(), name: noSite ? name.trim() : "", summary: noSite ? summary.trim() : "" });
+        const created = await api("/api/workspace", { action: "create_company", website: noSite ? "" : website.trim(), name: noSite ? name.trim() : "", summary: noSite ? summary.trim() : "", country });
         companyId = created.companyId;
         setCreatedId(companyId);
       }
@@ -338,6 +345,7 @@ function Onboarding({ initialWebsite, initialNoSite, onLogout, onCreated, error,
     <form className="onboarding-form onboarding-simple-form" onSubmit={submit}><button type="button" className="onboarding-logout mobile-only" onClick={onLogout}>Sair desta conta</button><span className="eyebrow accent">AGORA, O PRIMEIRO PLANO</span><h1>{noSite ? "Tudo bem começar sem site." : initialWebsite ? "Vamos montar seu primeiro plano." : "Qual é o site da sua empresa?"}</h1><p>{noSite ? "Uma frase basta para criar o primeiro espaço. Depois a gente melhora o contexto juntos." : initialWebsite ? "Já encontramos sua página inicial. Agora o agente vai ler o restante, entender seus compradores e propor as primeiras ações." : "Cole o endereço. O agente vai ler o site e preparar um primeiro plano para você revisar."}</p>
       {error && <div className="error-banner" role="alert">{error}</div>}
       {!noSite ? <label className="onboarding-main-field">Site da empresa<input type="text" inputMode="url" autoComplete="url" required value={website} onChange={(event) => setWebsite(event.target.value)} placeholder="suaempresa.com" disabled={!!createdId || !!busyPhase} /><small>Pode escrever só o domínio. Vamos conferir o endereço antes de analisar.</small></label> : <div className="onboarding-fallback"><label>Nome da empresa<input required minLength={2} value={name} onChange={(event) => setName(event.target.value)} placeholder="Nome da empresa" disabled={!!createdId || !!busyPhase} /></label><label>O que a empresa faz?<textarea required minLength={10} rows={3} value={summary} onChange={(event) => setSummary(event.target.value)} placeholder="Uma frase sobre seu produto ou serviço" disabled={!!createdId || !!busyPhase} /></label></div>}
+      <label className="onboarding-main-field">País de atuação<select required value={country} onChange={(event) => setCountry(event.target.value)} disabled={!!createdId || !!busyPhase}><option value="" disabled>Selecione o país</option>{COUNTRIES.map((entry) => <option key={entry.code} value={entry.code}>{entry.label}</option>)}</select><small>A estratégia e as referências de mercado vão considerar este país.</small></label>
       {busyPhase && <div className="analysis-progress" role="status"><span className="pulse-dot" /><div><strong>{busyPhase === "site" ? "Lendo o site e organizando o contexto…" : "Criando seu primeiro plano…"}</strong><small>Essa análise pode levar alguns instantes.</small></div></div>}
       <div className="onboarding-actions"><button className="primary-button" disabled={!!busyPhase}>{busyPhase ? "Analisando…" : createdId ? "Continuar análise →" : "Analisar meu negócio →"}</button>{!createdId && <button type="button" className="link-button" onClick={() => { setNoSite(!noSite); setError(""); }}>{noSite ? "Tenho um site ↗" : "Ainda não tenho site"}</button>}</div>
       <p className="onboarding-assurance">Você pode corrigir o que o agente encontrar. O agente revisa e publica em canais que você ativar; pode mudar para aprovação manual em Conexões.</p>
@@ -345,22 +353,111 @@ function Onboarding({ initialWebsite, initialNoSite, onLogout, onCreated, error,
   </main>;
 }
 
-function BriefForm({ company, research, confirmed, busy, onSave, onConfirm }: { company: Company; research: Research | null; confirmed: boolean; busy: string; onSave: (value: Brief) => void; onConfirm: () => void }) {
-  const [brief, setBrief] = useState<Brief>({ name: company.name, website: company.website, offer: company.offer, audience: company.audience, competitors: company.competitors, founderVoice: company.founder_voice, goal: company.goal });
-  const profile = research ? JSON.parse(research.profile_json) as { offer?: string; audience?: string; competitors?: string; likelyAlternatives?: string; evidence?: string[] } : null;
+function PencilIcon() {
+  return <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9" /><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4Z" /></svg>;
+}
+
+type ProfileEditFields = {
+  productCategory: string; productType: string; businessModel: string; pricing: string;
+  keyFeatures: string; primaryCta: string; techSignals: string;
+  icpSegment: string; icpCompanySize: string; icpPersona: string; icpPainPoint: string;
+};
+
+function BriefForm({ company, research, confirmed, busy, onSave, onConfirm }: { company: Company; research: Research | null; confirmed: boolean; busy: string; onSave: (value: Brief, profile?: ProfileEditFields) => void; onConfirm: () => void }) {
+  const [brief, setBrief] = useState<Brief>({ name: company.name, website: company.website, offer: company.offer, audience: company.audience, competitors: company.competitors, founderVoice: company.founder_voice, goal: company.goal, country: company.country });
+  const [editingAll, setEditingAll] = useState(false);
+  const [editingBasics, setEditingBasics] = useState(false);
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const profile = research ? JSON.parse(research.profile_json) as {
+    offer?: string; audience?: string; competitors?: string; evidence?: string[];
+    productCategory?: string[]; productType?: string;
+    businessModel?: string[]; pricing?: string; keyFeatures?: string[]; primaryCta?: string; techSignals?: string[];
+    topCompetitors?: string[]; icp?: { segment?: string; companySize?: string; persona?: string; painPoint?: string };
+  } : null;
+  const joinList = (items?: string[], sep = ", ") => items?.length ? items.join(sep) : "";
+  const profileDefaults = (): ProfileEditFields => ({
+    productCategory: joinList(profile?.productCategory), productType: profile?.productType ?? "",
+    businessModel: joinList(profile?.businessModel), pricing: profile?.pricing ?? "",
+    keyFeatures: joinList(profile?.keyFeatures, "; "), primaryCta: profile?.primaryCta ?? "",
+    techSignals: joinList(profile?.techSignals),
+    icpSegment: profile?.icp?.segment ?? "", icpCompanySize: profile?.icp?.companySize ?? "",
+    icpPersona: profile?.icp?.persona ?? "", icpPainPoint: profile?.icp?.painPoint ?? "",
+  });
+  const [profileEdit, setProfileEdit] = useState<ProfileEditFields>(profileDefaults());
   const source = (value: string, extracted?: string) => !value ? "A confirmar" : extracted && value === extracted ? "Lido no site" : "Informado por você";
-  const fact = (label: string, value: string, provenance: string) => <div><span>{label}<small>{provenance}</small></span><div className="profile-fact-value"><p>{value.length > 280 ? `${value.slice(0, 277).trim()}…` : value}</p>{value.length > 280 && <details><summary>Ver texto completo</summary><p>{value}</p></details>}</div></div>;
+  const isHypothesis = (provenance: string) => provenance.startsWith("Hipótese");
+  const save = () => { onSave(brief, profileEdit); setEditingAll(false); };
+  const cancelAll = () => { setBrief({ ...brief, offer: company.offer, audience: company.audience, competitors: company.competitors, country: company.country }); setProfileEdit(profileDefaults()); setEditingAll(false); };
+  const cancelBasics = () => { setBrief({ ...brief, name: company.name, website: company.website, goal: company.goal, founderVoice: company.founder_voice }); setEditingBasics(false); };
+  const valueBlock = (label: string, value: string) => {
+    const isLong = value.length > 280;
+    const truncated = isLong ? value.slice(0, 277).trim() : value;
+    const isOpen = !!expanded[label];
+    return <p>{truncated}{isLong && !isOpen && "…"}{isLong && isOpen && value.slice(truncated.length)}{isLong && <button type="button" className="link-button fact-toggle" onClick={() => setExpanded({ ...expanded, [label]: !isOpen })}>{isOpen ? "Mostrar menos" : "Ver texto completo"}</button>}</p>;
+  };
+  const editableFact = (key: "offer" | "audience" | "competitors" | "country", label: string, value: string, provenance: string, kind: "textarea" | "text" | "select") => <div>
+    <span>{label}<small className={isHypothesis(provenance) ? "hypothesis" : undefined}>{provenance}</small></span>
+    <div className="profile-fact-value">
+      {editingAll ? <>
+        {kind === "textarea" && <textarea rows={3} value={brief[key]} onChange={(event) => setBrief({ ...brief, [key]: event.target.value })} />}
+        {kind === "text" && <input value={brief[key]} onChange={(event) => setBrief({ ...brief, [key]: event.target.value })} />}
+        {kind === "select" && <select value={brief[key]} onChange={(event) => setBrief({ ...brief, [key]: event.target.value })}><option value="" disabled>Selecione o país</option>{COUNTRIES.map((entry) => <option key={entry.code} value={entry.code}>{entry.label}</option>)}</select>}
+      </> : valueBlock(label, value)}
+    </div>
+  </div>;
+  const editableProfileFact = (key: keyof ProfileEditFields, label: string, value: string, provenance: string, kind: "text" | "textarea") => <div>
+    <span>{label}<small className={isHypothesis(provenance) ? "hypothesis" : undefined}>{provenance}</small></span>
+    <div className="profile-fact-value">
+      {editingAll
+        ? kind === "textarea"
+          ? <textarea rows={3} value={profileEdit[key]} onChange={(event) => setProfileEdit({ ...profileEdit, [key]: event.target.value })} />
+          : <input value={profileEdit[key]} onChange={(event) => setProfileEdit({ ...profileEdit, [key]: event.target.value })} />
+        : valueBlock(label, value)}
+    </div>
+  </div>;
   return <div className="business-profile">
     <div className="profile-source"><span className="eyebrow">O QUE O AGENTE ENTENDEU</span><span>{research ? `Site analisado: ${new URL(research.source_url).hostname}` : "Ponto de partida informado por você"}</span></div>
-    <h2>{company.name}</h2>
+    <div className="profile-heading-row"><h2>{company.name}</h2>{!editingAll && <button type="button" className="profile-edit-trigger" onClick={() => setEditingAll(true)}><PencilIcon /> Editar informações</button>}</div>
     <div className="profile-facts">
-      {fact("OFERTA", company.offer || "Ainda não identificada", source(company.offer, profile?.offer))}
-      {fact("COMPRADOR", company.audience || "Ainda não confirmado", source(company.audience, profile?.audience))}
-      {fact("ALTERNATIVAS", company.competitors || profile?.likelyAlternatives || "Ainda não identificadas", company.competitors ? source(company.competitors, profile?.competitors) : profile?.likelyAlternatives ? "Hipótese do agente" : "A confirmar")}
+      {editableFact("offer", "OFERTA", company.offer || "Ainda não identificada", source(company.offer, profile?.offer), "textarea")}
+      {editableFact("audience", "COMPRADOR", company.audience || "Ainda não confirmado", source(company.audience, profile?.audience), "textarea")}
+      {editableFact("competitors", "ALTERNATIVAS", company.competitors || profile?.topCompetitors?.join(", ") || "Ainda não identificadas", company.competitors ? source(company.competitors, profile?.competitors) : profile?.topCompetitors?.length ? "Hipótese do agente" : "A confirmar", "text")}
+      {editableFact("country", "PAÍS DE ATUAÇÃO", countryLabel(company.country) || "A confirmar", company.country ? "Informado por você" : "A confirmar", "select")}
+      {editingAll && <div className="profile-fact-actions-row"><button type="button" className="primary-button" disabled={!!busy} onClick={save}>{busy ? "Salvando…" : "Salvar alterações"}</button><button type="button" className="link-button" disabled={!!busy} onClick={cancelAll}>Cancelar</button></div>}
+      {editableProfileFact("productCategory", "CATEGORIA", profile?.productCategory?.length ? profile.productCategory.join(", ") : "Ainda não identificada", profile?.productCategory?.length ? "Lido no site" : "A confirmar", "text")}
+      {editableProfileFact("productType", "TIPO DE PRODUTO", profile?.productType || "Ainda não identificado", profile?.productType ? "Lido no site" : "A confirmar", "text")}
+      {editableProfileFact("businessModel", "MODELO DE NEGÓCIO", profile?.businessModel?.length ? profile.businessModel.join(", ") : "Ainda não identificado", profile?.businessModel?.length ? "Lido no site" : "A confirmar", "text")}
+      {editableProfileFact("pricing", "PREÇO", profile?.pricing || "Ainda não identificado", profile?.pricing ? "Lido no site" : "A confirmar", "textarea")}
+      {editableProfileFact("keyFeatures", "FUNCIONALIDADES-CHAVE", profile?.keyFeatures?.length ? profile.keyFeatures.join("; ") : "Ainda não identificadas", profile?.keyFeatures?.length ? "Lido no site" : "A confirmar", "textarea")}
+      {editableProfileFact("primaryCta", "CTA PRINCIPAL", profile?.primaryCta || "Ainda não identificado", profile?.primaryCta ? "Lido no site" : "A confirmar", "text")}
+      {editableProfileFact("techSignals", "SINAIS TÉCNICOS", profile?.techSignals?.length ? profile.techSignals.join(", ") : "Ainda não identificados", profile?.techSignals?.length ? "Lido no site" : "A confirmar", "textarea")}
+      <div>
+        <span>ICP<small className="hypothesis">Hipótese do agente</small></span>
+        <div className="profile-fact-value">{editingAll ? <ul className="icp-sublist icp-sublist-edit">
+          <li><strong>Segmento:</strong><input value={profileEdit.icpSegment} onChange={(event) => setProfileEdit({ ...profileEdit, icpSegment: event.target.value })} /></li>
+          <li><strong>Porte da empresa:</strong><input value={profileEdit.icpCompanySize} onChange={(event) => setProfileEdit({ ...profileEdit, icpCompanySize: event.target.value })} /></li>
+          <li><strong>Cargo:</strong><input value={profileEdit.icpPersona} onChange={(event) => setProfileEdit({ ...profileEdit, icpPersona: event.target.value })} /></li>
+          <li><strong>Dor:</strong><textarea rows={2} value={profileEdit.icpPainPoint} onChange={(event) => setProfileEdit({ ...profileEdit, icpPainPoint: event.target.value })} /></li>
+        </ul> : <ul className="icp-sublist">
+          <li><strong>Segmento:</strong> {profile?.icp?.segment || "A confirmar"}</li>
+          <li><strong>Porte da empresa:</strong> {profile?.icp?.companySize || "A confirmar"}</li>
+          <li><strong>Cargo:</strong> {profile?.icp?.persona || "A confirmar"}</li>
+          <li><strong>Dor:</strong> {profile?.icp?.painPoint || "A confirmar"}</li>
+        </ul>}</div>
+      </div>
     </div>
-    {!!profile?.evidence?.length && <details className="profile-evidence"><summary>Ver trechos lidos no site</summary>{profile.evidence.map((item) => <p key={item}>↗ {item}</p>)}</details>}
+    <div className="profile-basics">
+      <div className="profile-heading-row">
+        <span className="profile-basics-label">Nome, site, objetivo e voz do founder</span>
+        {!editingBasics && <button type="button" className="profile-edit-trigger" onClick={() => setEditingBasics(true)}><PencilIcon /> Editar</button>}
+      </div>
+      {editingBasics ? <form className="form-panel" onSubmit={(event) => { event.preventDefault(); onSave(brief); setEditingBasics(false); }}>
+        <BriefFields value={brief} change={setBrief} />
+        <div className="profile-fact-actions-row"><button className="primary-button" disabled={!!busy}>{busy ? "Salvando…" : "Salvar contexto →"}</button><button type="button" className="link-button" disabled={!!busy} onClick={cancelBasics}>Cancelar</button></div>
+      </form> : <div className="form-panel"><BriefFieldsReadOnly value={brief} /></div>}
+    </div>
     {!confirmed && <form className="profile-mission" onSubmit={(event) => { event.preventDefault(); onSave(brief); }}><span className="eyebrow">SÓ VOCÊ PODE DEFINIR</span><h3>Qual resultado importa nos próximos meses?</h3><p>Uma frase ajuda o agente a priorizar o trabalho. Pode ajustar depois.</p><textarea rows={2} value={brief.goal} onChange={(event) => setBrief({ ...brief, goal: event.target.value })} placeholder="Ex.: gerar conversas com líderes de engenharia de empresas B2B" /><div><button className="primary-button" disabled={!!busy || !brief.goal.trim()}>{busy ? "Preparando…" : "Começar com este objetivo →"}</button><button type="button" className="link-button" disabled={!!busy} onClick={onConfirm}>Decidir depois</button></div></form>}
-    <details className="profile-edit" open={!company.audience}><summary>Corrigir ou acrescentar informações</summary><form className="form-panel" onSubmit={(event) => { event.preventDefault(); onSave(brief); }}><BriefFields value={brief} change={setBrief} /><button className="primary-button" disabled={!!busy}>{busy ? "Salvando…" : "Salvar contexto →"}</button></form></details>
+    {!!profile?.evidence?.length && <details className="profile-evidence"><summary>Ver trechos lidos no site</summary>{profile.evidence.map((item) => <p key={item}>↗ {item}</p>)}</details>}
   </div>;
 }
 

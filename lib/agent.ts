@@ -3,6 +3,7 @@ import { addActivity, db, firstRow, id, listRows, type Company } from "./db";
 import { deepseekJson, deepseekProse } from "./llm";
 import { readCompanySite, readPublicPage } from "./site";
 import { hostedMetrics } from "./hosted";
+import { countryLabel } from "./countries";
 
 const strategySchema = z.object({
   diagnosis: z.string(),
@@ -78,10 +79,27 @@ function normalizeStrategy(input: unknown): Strategy {
 function companyContext(company: Company) {
   const signals = listRows<{ source: string; metric: string; value: number; period: string; label: string }>(
     "SELECT source,metric,value,period,label FROM signals WHERE company_id=? ORDER BY period DESC LIMIT 20", company.id);
-  return `Empresa: ${company.name}\nSite: ${company.website}\nOferta: ${company.offer}\nPúblico: ${company.audience}\nConcorrentes: ${company.competitors}\nVoz/opiniões do founder: ${company.founder_voice}\nObjetivo: ${company.goal}\nSinais medidos (não confunda estimativas com tráfego real): ${JSON.stringify(signals)}`;
+  let marketContext = "";
+  const research = firstRow<{ profile_json: string }>("SELECT profile_json FROM company_research WHERE company_id=?", company.id);
+  if (research) {
+    try {
+      const profile = JSON.parse(research.profile_json) as Partial<CompanyProfile>;
+      if (profile.topCompetitors?.length) marketContext += `\nConcorrentes globais no nicho (hipótese de mercado, não confirmados pelo cliente): ${profile.topCompetitors.join(", ")}`;
+      if (profile.icp && (profile.icp.segment || profile.icp.companySize || profile.icp.persona || profile.icp.painPoint)) {
+        marketContext += `\nICP sugerido (hipótese): segmento "${profile.icp.segment}", porte "${profile.icp.companySize}", persona "${profile.icp.persona}", dor principal "${profile.icp.painPoint}"`;
+      }
+    } catch { /* perfil de pesquisa corrompido, ignora */ }
+  }
+  return `Empresa: ${company.name}\nPaís de atuação (mercado-alvo da estratégia): ${countryLabel(company.country)}\nSite: ${company.website}\nOferta: ${company.offer}\nPúblico: ${company.audience}\nConcorrentes citados pelo cliente: ${company.competitors}${marketContext}\nVoz/opiniões do founder: ${company.founder_voice}\nObjetivo: ${company.goal}\nSinais medidos (não confunda estimativas com tráfego real): ${JSON.stringify(signals)}`;
 }
 
-type CompanyProfile = { name: string; offer: string; audience: string; competitors: string; likelyAlternatives: string; evidence: string[]; unknowns: string[] };
+type Icp = { segment: string; companySize: string; persona: string; painPoint: string };
+type CompanyProfile = {
+  name: string; offer: string; audience: string; competitors: string; evidence: string[]; unknowns: string[];
+  oneLiner: string; whatItDoes: string; productCategory: string[]; productType: string;
+  businessModel: string[]; pricing: string; keyFeatures: string[]; primaryCta: string; techSignals: string[];
+  topCompetitors: string[]; icp: Icp;
+};
 
 function profileText(value: unknown): string {
   if (typeof value === "string") return value.trim();
@@ -93,18 +111,34 @@ async function learnFromSite(company: Company, site: Awaited<ReturnType<typeof r
   if (firstRow("SELECT company_id FROM company_research WHERE company_id=?", company.id)) return company;
   const page = site.home;
   const raw = await deepseekJson([
-    { role: "system", content: "Extraia um perfil comercial B2B apenas do texto público fornecido. Retorne JSON com name, offer, audience, competitors (array de marcas ou alternativas explicitamente citadas), likelyAlternatives (até 3 tipos de solução ou processo que o comprador provavelmente compara, apenas como hipóteses), evidence (trechos curtos do site que sustentam o perfil) e unknowns (até 3 perguntas importantes que o site não responde). Se não houver evidência para um campo factual, retorne string vazia ou array vazio. Separe fatos de hipóteses. Não invente ICP confirmado, marcas concorrentes, resultados, objetivo de negócio ou opiniões do founder." },
-    { role: "user", content: `Página inicial: ${page.url}\nMeta description: ${page.audit.description}\nPáginas públicas lidas: ${site.text.slice(0, 19000)}\nExtraia o que for verificável. JSON.` },
+    { role: "system", content: "Extraia um perfil comercial B2B completo de um produto/empresa. A maioria dos campos deve vir apenas do texto público fornecido, sem inventar: name, oneLiner (uma frase resumindo o produto), whatItDoes (parágrafo curto explicando o funcionamento), productCategory (array com até 3 categorias do produto), productType (ex.: self-service, híbrido, enterprise, conforme o que o site indica), offer, audience, competitors (array de marcas ou alternativas explicitamente citadas no site), businessModel (array com os modelos de monetização citados, ex.: assinatura, freemium, licenciamento), pricing (resumo dos preços encontrados no site), keyFeatures (array com até 7 funcionalidades reais citadas), primaryCta (principal chamada para ação do site), techSignals (array com até 6 sinais técnicos citados: integrações, stack, certificações, licença open source etc.), evidence (trechos curtos do site que sustentam o perfil) e unknowns (até 3 perguntas importantes que o site não responde). Use string vazia ou array vazio quando não houver evidência para esses campos; não invente resultados, objetivo de negócio ou opiniões do founder. Além disso, com base no nicho identificado, proponha usando seu conhecimento geral de mercado (não só o texto do site): topCompetitors (até 6 concorrentes reais e conhecidos no mesmo nicho, em qualquer país, sem restringir a um único mercado) e icp (objeto com segment, companySize, persona e painPoint descrevendo o comprador ideal mais provável). Trate topCompetitors e icp sempre como hipótese de mercado, nunca como fato confirmado pelo cliente." },
+    { role: "user", content: `Página inicial: ${page.url}\nMeta description: ${page.audit.description}\nPáginas públicas lidas: ${site.text.slice(0, 19000)}\nExtraia o que for verificável e proponha a pesquisa de mercado pedida. JSON.` },
   ], z.unknown());
   const parsed = z.record(z.string(), z.unknown()).parse(raw);
+  const icpParsed = z.record(z.string(), z.unknown()).safeParse(parsed.icp);
   const profile: CompanyProfile = {
     name: profileText(parsed.name).slice(0, 120),
     offer: profileText(parsed.offer).slice(0, 2000),
     audience: profileText(parsed.audience).slice(0, 2000),
     competitors: profileText(parsed.competitors).slice(0, 1000),
-    likelyAlternatives: profileText(parsed.likelyAlternatives).slice(0, 1000),
     evidence: (Array.isArray(parsed.evidence) ? parsed.evidence : []).slice(0, 5).map(profileText).filter(Boolean),
     unknowns: (Array.isArray(parsed.unknowns) ? parsed.unknowns : []).slice(0, 3).map(profileText).filter(Boolean),
+    oneLiner: profileText(parsed.oneLiner).slice(0, 200),
+    whatItDoes: profileText(parsed.whatItDoes).slice(0, 1200),
+    productCategory: (Array.isArray(parsed.productCategory) ? parsed.productCategory : []).slice(0, 3).map(profileText).filter(Boolean),
+    productType: profileText(parsed.productType).slice(0, 80),
+    businessModel: (Array.isArray(parsed.businessModel) ? parsed.businessModel : []).slice(0, 6).map(profileText).filter(Boolean),
+    pricing: profileText(parsed.pricing).slice(0, 1000),
+    keyFeatures: (Array.isArray(parsed.keyFeatures) ? parsed.keyFeatures : []).slice(0, 7).map(profileText).filter(Boolean),
+    primaryCta: profileText(parsed.primaryCta).slice(0, 120),
+    techSignals: (Array.isArray(parsed.techSignals) ? parsed.techSignals : []).slice(0, 6).map(profileText).filter(Boolean),
+    topCompetitors: (Array.isArray(parsed.topCompetitors) ? parsed.topCompetitors : []).slice(0, 6).map(profileText).filter(Boolean),
+    icp: {
+      segment: profileText(icpParsed.success ? icpParsed.data.segment : "").slice(0, 200),
+      companySize: profileText(icpParsed.success ? icpParsed.data.companySize : "").slice(0, 120),
+      persona: profileText(icpParsed.success ? icpParsed.data.persona : "").slice(0, 200),
+      painPoint: profileText(icpParsed.success ? icpParsed.data.painPoint : "").slice(0, 300),
+    },
   };
   db().prepare(`INSERT INTO company_research(company_id,source_url,profile_json,checked_at) VALUES(?,?,?,?)`)
     .run(company.id, page.url, JSON.stringify(profile), new Date().toISOString());

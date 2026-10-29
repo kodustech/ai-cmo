@@ -19,14 +19,33 @@ const companyInput = z.object({
   offer: z.string().trim().max(2000), audience: z.string().trim().max(2000),
   competitors: z.string().trim().max(1000).default(""),
   founderVoice: z.string().trim().max(3000).default(""),
-  goal: z.string().trim().max(1000),
+  goal: z.string().trim().max(1000), country: z.string().trim().min(2).max(10),
 });
 
 const onboardingInput = z.object({
   website: z.string().trim().max(500).default(""),
   name: z.string().trim().max(120).default(""),
   summary: z.string().trim().max(1000).default(""),
+  country: z.string().trim().min(2).max(10),
 });
+
+const profileFactsInput = z.object({
+  productCategory: z.string().trim().max(600).default(""),
+  productType: z.string().trim().max(300).default(""),
+  businessModel: z.string().trim().max(600).default(""),
+  pricing: z.string().trim().max(2000).default(""),
+  keyFeatures: z.string().trim().max(3000).default(""),
+  primaryCta: z.string().trim().max(200).default(""),
+  techSignals: z.string().trim().max(1000).default(""),
+  icpSegment: z.string().trim().max(500).default(""),
+  icpCompanySize: z.string().trim().max(500).default(""),
+  icpPersona: z.string().trim().max(500).default(""),
+  icpPainPoint: z.string().trim().max(500).default(""),
+});
+
+function splitList(value: string, sep: string) {
+  return value.split(sep).map((item) => item.trim()).filter(Boolean);
+}
 
 function failure(error: unknown) {
   console.error("[workspace]", error);
@@ -88,9 +107,9 @@ export async function POST(request: NextRequest) {
       const website = page?.url || "";
       const name = input.name || (website ? new URL(website).hostname.replace(/^www\./, "") : "");
       const companyId = id();
-      db().prepare(`INSERT INTO companies(id,owner_id,name,website,offer,audience,competitors,founder_voice,goal,plan_mode)
-        VALUES(?,?,?,?,?,?,?,?,?,?)`).run(companyId, user.id, name, website, input.summary,
-        "", "", "", "", "agent");
+      db().prepare(`INSERT INTO companies(id,owner_id,name,website,offer,audience,competitors,founder_voice,goal,country,plan_mode)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?)`).run(companyId, user.id, name, website, input.summary,
+        "", "", "", "", input.country, "agent");
       db().prepare("INSERT INTO publication_settings(company_id,mode) VALUES(?,'automatic')").run(companyId);
       db().prepare("INSERT INTO site_projects(company_id) VALUES(?)").run(companyId);
       return NextResponse.json({ companyId });
@@ -157,23 +176,42 @@ export async function POST(request: NextRequest) {
       const input = companyInput.parse(body);
       const siteChanged = input.website !== company.website;
       const website = siteChanged && input.website ? (await readPublicPage(input.website)).url : input.website;
-      const previousResearch = firstRow<{ profile_json: string }>("SELECT profile_json FROM company_research WHERE company_id=?", company.id);
+      const previousResearch = firstRow<{ profile_json: string; source_url: string }>("SELECT profile_json,source_url FROM company_research WHERE company_id=?", company.id);
       const previousProfile = previousResearch ? JSON.parse(previousResearch.profile_json) as Record<string, string> : {};
       const retainOrReset = (value: string, prior?: string) => siteChanged && prior && value === prior ? "" : value;
       const name = siteChanged && website && previousProfile.name === input.name ? new URL(website).hostname.replace(/^www\./, "") : input.name;
       const offer = retainOrReset(input.offer, previousProfile.offer);
       const audience = retainOrReset(input.audience, previousProfile.audience);
       const competitors = retainOrReset(input.competitors, previousProfile.competitors);
-      db().prepare(`UPDATE companies SET name=?,website=?,offer=?,audience=?,competitors=?,founder_voice=?,goal=? WHERE id=?`)
+      db().prepare(`UPDATE companies SET name=?,website=?,offer=?,audience=?,competitors=?,founder_voice=?,goal=?,country=? WHERE id=?`)
         .run(name, website, offer, audience, competitors,
-          input.founderVoice, input.goal, company.id);
+          input.founderVoice, input.goal, input.country, company.id);
       if (siteChanged) {
         db().prepare("DELETE FROM company_research WHERE company_id=?").run(company.id);
         db().prepare("DELETE FROM site_audits WHERE company_id=?").run(company.id);
         db().prepare("DELETE FROM profile_confirmations WHERE company_id=?").run(company.id);
       } else {
-        db().prepare("INSERT INTO profile_confirmations(company_id,confirmed_at) VALUES(?,?) ON CONFLICT(company_id) DO UPDATE SET confirmed_at=excluded.confirmed_at")
-          .run(company.id, new Date().toISOString());
+        if (input.goal.trim()) {
+          db().prepare("INSERT INTO profile_confirmations(company_id,confirmed_at) VALUES(?,?) ON CONFLICT(company_id) DO UPDATE SET confirmed_at=excluded.confirmed_at")
+            .run(company.id, new Date().toISOString());
+        }
+        if (body.profile && typeof body.profile === "object") {
+          const edit = profileFactsInput.parse(body.profile);
+          const nextProfile = {
+            ...previousProfile,
+            productCategory: splitList(edit.productCategory, ","),
+            productType: edit.productType,
+            businessModel: splitList(edit.businessModel, ","),
+            pricing: edit.pricing,
+            keyFeatures: splitList(edit.keyFeatures, ";"),
+            primaryCta: edit.primaryCta,
+            techSignals: splitList(edit.techSignals, ","),
+            icp: { segment: edit.icpSegment, companySize: edit.icpCompanySize, persona: edit.icpPersona, painPoint: edit.icpPainPoint },
+          };
+          db().prepare(`INSERT INTO company_research(company_id,source_url,profile_json,checked_at) VALUES(?,?,?,?)
+            ON CONFLICT(company_id) DO UPDATE SET profile_json=excluded.profile_json`)
+            .run(company.id, previousResearch?.source_url ?? "", JSON.stringify(nextProfile), new Date().toISOString());
+        }
       }
       const updated = firstRow<typeof company>("SELECT * FROM companies WHERE id=?", company.id)!;
       try { await buildStrategy(updated); return NextResponse.json({ ok: true }); }

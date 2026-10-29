@@ -153,6 +153,7 @@ export function db(): DatabaseSync {
   `);
   // Retire credentials for the removed CMS integration from existing installations.
   connection.prepare("DELETE FROM connections WHERE kind=?").run("wordpress");
+  try { connection.exec("ALTER TABLE companies ADD COLUMN country TEXT NOT NULL DEFAULT ''"); } catch { /* column already exists */ }
   singleton = connection;
   return connection;
 }
@@ -162,7 +163,7 @@ export const id = () => crypto.randomUUID();
 export type User = { id: string; email: string };
 export type Company = {
   id: string; owner_id: string; name: string; website: string; offer: string;
-  audience: string; competitors: string; founder_voice: string; goal: string;
+  audience: string; competitors: string; founder_voice: string; goal: string; country: string;
   plan_mode: "agent" | "managed"; onboarding_complete: number;
   strategy_json: string; strategy_updated_at: string | null; created_at: string;
 };
