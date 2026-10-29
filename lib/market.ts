@@ -1,5 +1,6 @@
 import { addActivity, db, id, listRows, type Company } from "./db";
 import { saveSignal } from "./google";
+import { semrushDatabase } from "./countries";
 
 function domainOf(website: string) {
   if (!website) throw new Error("Informe o site da empresa primeiro.");
@@ -17,7 +18,7 @@ export async function syncSemrush(company: Company) {
   const key = process.env.SEMRUSH_API_KEY;
   if (!key) throw new Error("SEMRUSH_API_KEY não está configurada.");
   const domain = domainOf(company.website);
-  const params = new URLSearchParams({ type: "domain_ranks", key, domain, database: "us", export_columns: "Db,Dt,Rk,Or,Ot,Oc,Ad,At,Ac" });
+  const params = new URLSearchParams({ type: "domain_ranks", key, domain, database: semrushDatabase(company.country), export_columns: "Db,Dt,Rk,Or,Ot,Oc,Ad,At,Ac" });
   const response = await fetch(`https://api.semrush.com/?${params}`, { signal: AbortSignal.timeout(25_000), cache: "no-store" });
   const data = csvRow(await response.text());
   if (!response.ok) throw new Error(`Semrush respondeu ${response.status}.`);
